@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtualenv
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+
+# Runtime files
+state.json
+avatar.png
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# PyCharm
+*.iml
+
+# dotenv backups
+.env.*
+
+getid.py
+copydir.py
+entrypoint.sh
+Dockerfile
+docker-compose.yaml
+materials/
