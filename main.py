@@ -18,7 +18,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     URLInputFile,
 )
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 load_dotenv()
 
@@ -28,6 +28,15 @@ YANDEX_TOKEN = os.getenv("YANDEX_TOKEN")
 # Разрешенные группы: "-1001..., -1002..."
 ALLOWED_GROUP_IDS = [
     int(x.strip()) for x in os.getenv("ALLOWED_GROUP_IDS", "").split(",") if x.strip()
+]
+
+BESTUSER_IDS = [
+    int(x.strip()) for x in os.getenv("BESTUSER_IDS", "").split(",") if x.strip()
+]
+BESTUSER_USERNAMES = [
+    (x.strip().lstrip("@").lower())
+    for x in os.getenv("BESTUSER_USERNAMES", "").split(",")
+    if x.strip()
 ]
 
 MATERIALS_PATH = "/materials"
@@ -142,6 +151,30 @@ def extract_url(text: str) -> str | None:
         return m.group(1).strip()
     m = re.search(r"https?://\S+", text)
     return m.group(0).strip() if m else None
+
+
+def is_bestuser(user) -> bool:
+    if not user:
+        return False
+    if BESTUSER_IDS and user.id in set(BESTUSER_IDS):
+        return True
+    if BESTUSER_USERNAMES:
+        uname = (user.username or "").lower()
+        if uname and uname in set(BESTUSER_USERNAMES):
+            return True
+    return False
+
+
+async def fetch_quote_ru() -> str:
+    url = "http://api.forismatic.com/api/1.0/"
+    data = {"method": "getQuote", "format": "text", "lang": "ru"}
+
+    timeout = aiohttp.ClientTimeout(total=7)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.post(url, data=data) as r:
+            text = (await r.text()).strip()
+
+    return text or "Иногда лучше промолчать. Но не сегодня."
 
 
 async def send_link_files(message: Message, files: list[dict]) -> list[dict]:
@@ -289,6 +322,35 @@ async def cmd_go(message: Message, bot: Bot):
 @router.message(Command("id"))
 async def cmd_id(message: Message):
     await message.reply(str(message.chat.id))
+
+
+@router.message(F.text)
+async def on_cc(message: Message, bot: Bot):
+    if not message.text or message.text.strip().lower() != "чч":
+        return
+
+    # только bestuser
+    if not is_bestuser(message.from_user):
+        return
+
+    # доступ по тем же правилам (группа из списка или личка участника)
+    ok = await ensure_allowed_context(message, bot)
+    if not ok:
+        return
+
+    quote = await fetch_quote_ru()
+
+    # всегда в ЛС
+    try:
+        await bot.send_message(chat_id=message.from_user.id, text=quote)
+    except TelegramForbiddenError:
+        # пользователь не открыл ЛС с ботом
+        try:
+            await message.answer("Открой ЛС с ботом и нажми /start")
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("nav:"))
