@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 import ssl
 import certifi
+import urllib.parse
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, Router, F
@@ -60,6 +61,16 @@ PATH_CACHE: dict[str, str] = {}
 # user_id -> (expires_at, allowed_bool)
 MEMBER_CACHE: dict[int, tuple[float, bool]] = {}
 MEMBER_CACHE_TTL_SEC = int(os.getenv("MEMBER_CACHE_TTL_SEC", "60"))  # 60 сек
+
+# Google Sheets (публичная таблица через API key)
+GSHEETS_API_KEY = os.getenv("GSHEETS_API_KEY", "").strip()
+GSHEETS_SPREADSHEET_ID = os.getenv("GSHEETS_SPREADSHEET_ID", "").strip()
+GSHEETS_RANGE = os.getenv("GSHEETS_RANGE", "Sheet1!A:Z").strip()
+
+# кеш таблицы, чтобы не дергать Google на каждый запрос
+# (expires_at, values)
+GSHEETS_CACHE: tuple[float, list[list[str]]] | None = None
+GSHEETS_CACHE_TTL_SEC = int(os.getenv("GSHEETS_CACHE_TTL_SEC", "60"))
 
 
 def cache_path(path: str) -> str:
@@ -142,6 +153,7 @@ def link_title_from_filename(name: str) -> str:
     return base[5:] if base.lower().startswith("link_") else base
 
 
+
 def extract_url(text: str) -> str | None:
     if not text:
         return None
@@ -151,6 +163,80 @@ def extract_url(text: str) -> str | None:
         return m.group(1).strip()
     m = re.search(r"https?://\S+", text)
     return m.group(0).strip() if m else None
+
+
+# --- Google Sheets helpers ---
+async def gsheets_get_values() -> list[list[str]]:
+    """Читает диапазон из Google Sheets через Sheets API v4 (требуется публичная таблица + API key)."""
+    global GSHEETS_CACHE
+
+    if not (GSHEETS_API_KEY and GSHEETS_SPREADSHEET_ID and GSHEETS_RANGE):
+        raise RuntimeError("Нужны GSHEETS_API_KEY, GSHEETS_SPREADSHEET_ID, GSHEETS_RANGE в .env")
+
+    now = time.time()
+    if GSHEETS_CACHE and GSHEETS_CACHE[0] > now:
+        return GSHEETS_CACHE[1]
+
+    url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{GSHEETS_SPREADSHEET_ID}"
+        f"/values/{urllib.parse.quote(GSHEETS_RANGE, safe='!$')}"
+    )
+    params = {"key": GSHEETS_API_KEY, "majorDimension": "ROWS"}
+
+    async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as s:
+        async with s.get(url, params=params, ssl=SSL_CTX) as r:
+            if r.status == 403:
+                # почти всегда значит: таблица не публичная для чтения по API key
+                txt = await r.text()
+                raise RuntimeError(
+                    "Google Sheets вернул 403. Сделай таблицу публичной для чтения или используй service account. "
+                    f"Детали: {txt[:500]}"
+                )
+            if r.status >= 400:
+                txt = await r.text()
+                raise RuntimeError(f"Google Sheets HTTP {r.status}: {txt[:800]}")
+            data = await r.json()
+
+    values = data.get("values") or []
+    # нормализуем в строки
+    norm: list[list[str]] = [[str(c) for c in row] for row in values]
+    GSHEETS_CACHE = (now + GSHEETS_CACHE_TTL_SEC, norm)
+    return norm
+
+
+def _find_col_idx(headers: list[str], *variants: str) -> int | None:
+    h = [(x or "").strip().lower() for x in headers]
+    for v in variants:
+        v2 = v.strip().lower()
+        if v2 in h:
+            return h.index(v2)
+    return None
+
+
+async def lookup_dmx_by_socket_number(socket_number: str) -> str | None:
+    """Ищет строку, где 'номер розетки' == socket_number и возвращает значение из колонки 'DMX адрес'."""
+    values = await gsheets_get_values()
+    if not values:
+        return None
+
+    headers = values[0]
+    idx_socket = _find_col_idx(headers, "номер розетки", "розетка", "socket", "outlet", "номер")
+    idx_dmx = _find_col_idx(headers, "dmx адрес", "dmx", "адрес dmx", "dmx address")
+
+    # если нет заголовков — пробуем дефолт: A=socket, B=dmx
+    if idx_socket is None or idx_dmx is None:
+        idx_socket, idx_dmx = 0, 1
+
+    target = str(socket_number).strip().lower()
+    for row in values[1:]:
+        if idx_socket >= len(row):
+            continue
+        cell = (row[idx_socket] or "").strip().lower()
+        # поддержка значений вида 14Н / 14Р / STM 14Н
+        if cell == target or cell.endswith(target) or target in cell:
+            return (row[idx_dmx].strip() if idx_dmx < len(row) else "") or None
+
+    return None
 
 
 def is_bestuser(user) -> bool:
@@ -326,7 +412,27 @@ async def cmd_id(message: Message):
 
 @router.message(F.text)
 async def on_cc(message: Message, bot: Bot):
-    if not message.text or message.text.strip().lower() != "чч":
+    if not message.text:
+        return
+
+    # STM 567, STM 14Н, STM 14Р (русские буквы тоже)
+    m = re.match(r"^\s*stm\s+([0-9]+[A-Za-zА-Яа-яЁё]*)\s*$", message.text, flags=re.IGNORECASE)
+    if m:
+        ok = await ensure_allowed_context(message, bot)
+        if not ok:
+            return
+        num = m.group(1).strip()
+        try:
+            dmx = await lookup_dmx_by_socket_number(num)
+            if dmx:
+                await message.answer(f"Номер канала {num} - DMX адрес - {dmx}")
+            else:
+                await message.answer(f"Номер канала {num} - DMX адрес - не найден")
+        except Exception as e:
+            await message.answer(f"Ошибка Google Sheets: {e}")
+        return
+
+    if message.text.strip().lower() != "чч":
         return
 
     # только bestuser
