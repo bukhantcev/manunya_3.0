@@ -239,6 +239,38 @@ async def lookup_dmx_by_socket_number(socket_number: str) -> str | None:
     return None
 
 
+# --- MTS/DMX reverse lookup ---
+def _norm_cell(s: str) -> str:
+    return re.sub(r"\s+", "", (s or "")).strip().lower()
+
+
+async def lookup_socket_by_dmx_address(dmx_address: str) -> str | None:
+    """Ищет строку, где 'DMX адрес' == dmx_address и возвращает значение из колонки 'номер розетки'."""
+    values = await gsheets_get_values()
+    if not values:
+        return None
+
+    headers = values[0]
+    idx_socket = _find_col_idx(headers, "номер розетки", "розетка", "socket", "outlet", "номер")
+    idx_dmx = _find_col_idx(headers, "dmx адрес", "dmx", "адрес dmx", "dmx address")
+
+    # если нет заголовков — пробуем дефолт: A=socket, B=dmx
+    if idx_socket is None or idx_dmx is None:
+        idx_socket, idx_dmx = 0, 1
+
+    target = _norm_cell(str(dmx_address))
+    for row in values[1:]:
+        if idx_dmx >= len(row):
+            continue
+        cell = _norm_cell(row[idx_dmx])
+
+        # точное совпадение + допускаем форматы типа "u1/120", "1/120", "120"
+        if cell == target or cell.endswith(target) or target in cell:
+            return (row[idx_socket].strip() if idx_socket < len(row) else "") or None
+
+    return None
+
+
 def is_bestuser(user) -> bool:
     if not user:
         return False
@@ -413,6 +445,23 @@ async def cmd_id(message: Message):
 @router.message(F.text)
 async def on_cc(message: Message, bot: Bot):
     if not message.text:
+        return
+
+    # MTS 120, MTS 1/120, MTS U1/120 — ищем номер розетки по DMX адресу
+    m = re.match(r"^\s*mts\s+([^\n\r]+?)\s*$", message.text, flags=re.IGNORECASE)
+    if m:
+        ok = await ensure_allowed_context(message, bot)
+        if not ok:
+            return
+        addr = m.group(1).strip()
+        try:
+            socket_num = await lookup_socket_by_dmx_address(addr)
+            if socket_num:
+                await message.answer(f"DMX адрес {addr} - номер розетки - {socket_num}")
+            else:
+                await message.answer(f"DMX адрес {addr} - номер розетки - не найден")
+        except Exception as e:
+            await message.answer(f"Ошибка Google Sheets: {e}")
         return
 
     # STM 567, STM 14Н, STM 14Р (русские буквы тоже)
