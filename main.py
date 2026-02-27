@@ -251,21 +251,32 @@ async def lookup_socket_by_dmx_address(dmx_address: str) -> str | None:
         return None
 
     headers = values[0]
-    idx_socket = _find_col_idx(headers, "номер розетки", "розетка", "socket", "outlet", "номер")
-    idx_dmx = _find_col_idx(headers, "dmx адрес", "dmx", "адрес dmx", "dmx address")
+    idx_socket = _find_col_idx(headers, "номер розетки", "Номер розетки", "розетка", "socket", "outlet", "номер")
+    idx_dmx = _find_col_idx(headers, "dmx адрес", "DMX адрес", "dmx", "адрес dmx", "dmx address")
 
     # если нет заголовков — пробуем дефолт: A=socket, B=dmx
     if idx_socket is None or idx_dmx is None:
         idx_socket, idx_dmx = 0, 1
 
-    target = _norm_cell(str(dmx_address))
+    raw = str(dmx_address).strip()
+    target = _norm_cell(raw)
+
+    # доп. вариант: если адрес задан как "U1/120" или "1/120" — сравним также по хвосту "120"
+    tail = target.split("/")[-1]
+
     for row in values[1:]:
         if idx_dmx >= len(row):
             continue
-        cell = _norm_cell(row[idx_dmx])
+        cell_raw = row[idx_dmx] if idx_dmx < len(row) else ""
+        cell = _norm_cell(cell_raw)
+        cell_tail = cell.split("/")[-1]
 
-        # точное совпадение + допускаем форматы типа "u1/120", "1/120", "120"
-        if cell == target or cell.endswith(target) or target in cell:
+        # строгое совпадение по нормализованной строке
+        if cell == target:
+            return (row[idx_socket].strip() if idx_socket < len(row) else "") or None
+
+        # если пользователь ввёл только хвост или в таблице хранится полный формат — допускаем совпадение по хвосту
+        if tail and cell_tail == tail:
             return (row[idx_socket].strip() if idx_socket < len(row) else "") or None
 
     return None
@@ -457,9 +468,9 @@ async def on_cc(message: Message, bot: Bot):
         try:
             socket_num = await lookup_socket_by_dmx_address(addr)
             if socket_num:
-                await message.answer(f"DMX адрес {addr} - номер розетки - {socket_num}")
+                await message.answer(f"DMX адрес {addr} -> номер розетки {socket_num}")
             else:
-                await message.answer(f"DMX адрес {addr} - номер розетки - не найден")
+                await message.answer(f"DMX адрес {addr} -> номер розетки не найден")
         except Exception as e:
             await message.answer(f"Ошибка Google Sheets: {e}")
         return
