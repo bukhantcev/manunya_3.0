@@ -38,10 +38,10 @@ Thumbs.db
 
 # dotenv backups
 .env.*
+!.env.example
 
 getid.py
 copydir.py
 entrypoint.sh
-Dockerfile
 docker-compose.yaml
 materials/

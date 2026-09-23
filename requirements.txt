@@ -1,3 +1,8 @@
-aiogram==3.24.0
-aiohttp
-python-dotenv
+aiogram==3.31.0
+aiohttp==3.14.3
+python-dotenv==1.2.3
+certifi==2026.7.22
+openai==3.19.0
+pydantic==2.13.5
+Pillow==12.3.0
+pypdfium2==5.13.0

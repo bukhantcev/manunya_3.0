@@ -1,0 +1,9 @@
+# Deny by default: no .env, Git history, IDE settings, caches or user files.
+**
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!main.py
+!tickets.py
+!tests/
+!tests/test_tickets.py

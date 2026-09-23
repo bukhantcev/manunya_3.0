@@ -20,6 +20,8 @@ from aiogram.types import (
     URLInputFile,
 )
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from tickets import (Config as TicketConfig, Recognizer, TicketService, build_router,
+                     TicketUpdateObserver, configure_ticket_logging, audit)
 
 load_dotenv()
 
@@ -582,11 +584,21 @@ async def main():
     if not ALLOWED_GROUP_IDS:
         raise SystemExit("Нужен ALLOWED_GROUP_IDS в .env (через запятую)")
 
+    ticket_config = TicketConfig.from_env(os.environ, ALLOWED_GROUP_IDS)
+    recognizer = Recognizer(ticket_config) if ticket_config else None
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
-
-    await dp.start_polling(bot)
+    if ticket_config:
+        configure_ticket_logging()
+        dp.update.outer_middleware(TicketUpdateObserver())
+        dp.include_router(build_router(TicketService(ticket_config, recognizer)))
+        audit("startup_enabled")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        if recognizer:
+            await recognizer.close()
 
 
 if __name__ == "__main__":
